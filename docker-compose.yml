@@ -1,0 +1,45 @@
+services:
+  db:
+    image: postgres:16
+    container_name: iptv_db
+    environment:
+      - POSTGRES_DB=iptv
+      - POSTGRES_USER=iptv
+      - POSTGRES_PASSWORD=iptv_password_change_me
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  api:
+    build: .
+    container_name: iptv_api
+    ports:
+      - "8000:8000"
+    environment:
+      - DB_URL=postgresql+psycopg2://iptv:iptv_password_change_me@db:5432/iptv
+      - EPG_REFRESH_HOURS=6
+      # IMPORTANT: change these before going public on the Internet
+      - ADMIN_KEY=MySecretAdminKey_123456
+      - TOKEN_SECRET=MyTokenSecret_987654
+      - TOKEN_TTL_HOURS=720
+      # Public URL (for Stripe success/cancel if you have a site)
+      - PUBLIC_BASE_URL=http://localhost:8000
+      # Stripe
+      - STRIPE_SECRET_KEY=sk_test_change_me
+      - STRIPE_WEBHOOK_SECRET=whsec_change_me
+      - STRIPE_BASIC_PRICE_ID=price_basic_change_me
+      - STRIPE_PREMIUM_PRICE_ID=price_premium_change_me
+      # Gmail SMTP (App Password)
+      - SMTP_HOST=smtp.gmail.com
+      - SMTP_PORT=587
+      - SMTP_USER=your_gmail@gmail.com
+      - SMTP_PASS=your_gmail_app_password
+      - SMTP_FROM=KadrTV <your_gmail@gmail.com>
+    depends_on:
+      - db
+    restart: unless-stopped
+
+volumes:
+  pgdata:
