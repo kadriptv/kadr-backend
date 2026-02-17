@@ -2,25 +2,21 @@ import os
 import smtplib
 from email.mime.text import MIMEText
 
-def send_login_code(to_email: str, code: str):
-    host = os.getenv("SMTP_HOST", "smtp.gmail.com")
-    port = int(os.getenv("SMTP_PORT", "587"))
-    user = os.getenv("SMTP_USER", "")
-    password = os.getenv("SMTP_PASS", "")
-    sender = os.getenv("SMTP_FROM", user)
 
-    if not user or not password:
-        raise RuntimeError("SMTP_USER/SMTP_PASS not configured")
+SMTP_HOST = os.getenv("SMTP_HOST", "smtp.gmail.com")
+SMTP_PORT = int(os.getenv("SMTP_PORT", 587))
+SMTP_USER = os.getenv("SMTP_USER")
+SMTP_PASSWORD = os.getenv("SMTP_PASSWORD")
+SMTP_FROM = os.getenv("SMTP_FROM", SMTP_USER)
 
-    subject = os.getenv("SMTP_SUBJECT", "KadrTV: код входа")
-    body = f"Ваш код входа: {code}\n\nКод действует 10 минут.\nЕсли это были не вы — просто игнорируйте письмо."
 
-    msg = MIMEText(body, "plain", "utf-8")
-    msg["Subject"] = subject
-    msg["From"] = sender
-    msg["To"] = to_email
+def send_login_code(email: str, code: str):
+    msg = MIMEText(f"Ваш код входа: {code}")
+    msg["Subject"] = "IPTV Login Code"
+    msg["From"] = SMTP_FROM
+    msg["To"] = email
 
-    with smtplib.SMTP(host, port) as s:
-        s.starttls()
-        s.login(user, password)
-        s.send_message(msg)
+    with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
+        server.starttls()
+        server.login(SMTP_USER, SMTP_PASSWORD)
+        server.send_message(msg)
