@@ -16,7 +16,17 @@ def send_login_code(email: str, code: str):
     msg["From"] = SMTP_FROM
     msg["To"] = email
 
-    with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
+    try:
+        server = smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=10)
+        server.ehlo()
         server.starttls()
+        server.ehlo()
+
         server.login(SMTP_USER, SMTP_PASSWORD)
-        server.send_message(msg)
+        server.sendmail(SMTP_FROM, [email], msg.as_string())
+
+        server.quit()
+
+    except Exception as e:
+        print("SMTP ERROR:", str(e))
+        raise
