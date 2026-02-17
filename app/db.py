@@ -113,7 +113,7 @@ def init_db() -> None:
             start_utc TIMESTAMPTZ NOT NULL,
             stop_utc TIMESTAMPTZ NOT NULL,
             title TEXT,
-            desc TEXT,
+            description TEXT,
             PRIMARY KEY(playlist_id, tvg_id, start_utc, stop_utc)
         );
         """,
