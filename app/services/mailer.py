@@ -1,32 +1,29 @@
 import os
-import smtplib
-from email.mime.text import MIMEText
+from sendgrid import SendGridAPIClient
+from sendgrid.helpers.mail import Mail
 
 
-SMTP_HOST = os.getenv("SMTP_HOST", "smtp.gmail.com")
-SMTP_PORT = int(os.getenv("SMTP_PORT", 587))
-SMTP_USER = os.getenv("SMTP_USER")
-SMTP_PASSWORD = os.getenv("SMTP_PASSWORD")
-SMTP_FROM = os.getenv("SMTP_FROM", SMTP_USER)
+SENDGRID_API_KEY = os.getenv("SENDGRID_API_KEY")
+EMAIL_FROM = os.getenv("EMAIL_FROM")
 
 
 def send_login_code(email: str, code: str):
-    msg = MIMEText(f"Ваш код входа: {code}")
-    msg["Subject"] = "IPTV Login Code"
-    msg["From"] = SMTP_FROM
-    msg["To"] = email
+    if not SENDGRID_API_KEY:
+        raise Exception("SENDGRID_API_KEY not set")
+
+    message = Mail(
+        from_email=EMAIL_FROM,
+        to_emails=email,
+        subject="Ваш код входа",
+        html_content=f"<strong>Ваш код входа: {code}</strong>"
+    )
 
     try:
-        server = smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=10)
-        server.ehlo()
-        server.starttls()
-        server.ehlo()
+        sg = SendGridAPIClient(SENDGRID_API_KEY)
+        response = sg.send(message)
 
-        server.login(SMTP_USER, SMTP_PASSWORD)
-        server.sendmail(SMTP_FROM, [email], msg.as_string())
-
-        server.quit()
+        if response.status_code >= 400:
+            raise Exception(f"SendGrid error: {response.status_code}")
 
     except Exception as e:
-        print("SMTP ERROR:", str(e))
-        raise
+        raise Exception(f"SendGrid failed: {e}")
