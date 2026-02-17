@@ -12,7 +12,7 @@ def bootstrap():
             id TEXT PRIMARY KEY,
             email TEXT UNIQUE NOT NULL,
             password_hash TEXT NOT NULL,
-            created_at TIMESTAMP WITH TIME ZONE NOT NULL
+            created_at TIMESTAMPTZ NOT NULL
         );
         """))
 
@@ -24,7 +24,7 @@ def bootstrap():
             price_cents INTEGER NOT NULL,
             currency TEXT NOT NULL,
             stripe_price_id TEXT NOT NULL,
-            created_at TIMESTAMP WITH TIME ZONE NOT NULL
+            created_at TIMESTAMPTZ NOT NULL
         );
         """))
 
@@ -36,7 +36,7 @@ def bootstrap():
             package_id TEXT NOT NULL,
             status TEXT NOT NULL,
             stripe_subscription_id TEXT,
-            created_at TIMESTAMP WITH TIME ZONE NOT NULL
+            created_at TIMESTAMPTZ NOT NULL
         );
         """))
 
@@ -46,17 +46,17 @@ def bootstrap():
             id TEXT PRIMARY KEY,
             user_id TEXT NOT NULL,
             url TEXT NOT NULL,
-            created_at TIMESTAMP WITH TIME ZONE NOT NULL
+            created_at TIMESTAMPTZ NOT NULL
         );
         """))
 
-        # --- EPG (ВАЖНО: исправлено desc → description) ---
+        # --- EPG ---  (ВАЖНО: НЕТ "desc", только description)
         conn.execute(text("""
         CREATE TABLE IF NOT EXISTS epg_programmes(
             playlist_id TEXT NOT NULL,
             tvg_id TEXT NOT NULL,
-            start_utc TIMESTAMP WITH TIME ZONE NOT NULL,
-            stop_utc TIMESTAMP WITH TIME ZONE NOT NULL,
+            start_utc TIMESTAMPTZ NOT NULL,
+            stop_utc TIMESTAMPTZ NOT NULL,
             title TEXT,
             description TEXT,
             PRIMARY KEY (playlist_id, tvg_id, start_utc, stop_utc)
@@ -65,11 +65,15 @@ def bootstrap():
 
         conn.commit()
 
-    # Заполняем тарифы
+    # Заполняем тарифы (если заданы STRIPE_*_PRICE_ID)
     ensure_default_packages()
 
 
 def ensure_default_packages():
+    """
+    Seed Basic/Premium packages if packages table is empty.
+    Requires STRIPE_BASIC_PRICE_ID and STRIPE_PREMIUM_PRICE_ID in environment.
+    """
     basic_price_id = os.getenv("STRIPE_BASIC_PRICE_ID", "").strip()
     prem_price_id = os.getenv("STRIPE_PREMIUM_PRICE_ID", "").strip()
 
