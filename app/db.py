@@ -1,111 +1,83 @@
 import os
 from contextlib import contextmanager
+
 from sqlalchemy import create_engine, text
-from sqlalchemy.engine import Connection
+from sqlalchemy.engine import Engine
 
-def _db_url() -> str:
-    # Example: postgresql+psycopg2://user:pass@host:5432/dbname
-    return os.getenv("DB_URL", "")
 
-_engine = None
+_engine: Engine | None = None
 
-def engine():
+
+def _get_engine() -> Engine:
     global _engine
-    if _engine is None:
-        url = _db_url()
-        if not url:
-            raise RuntimeError("DB_URL is not set (Postgres required for production)")
-        _engine = create_engine(url, pool_pre_ping=True)
+    if _engine is not None:
+        return _engine
+
+    database_url = os.getenv("DATABASE_URL", "").strip()
+    if not database_url:
+        raise RuntimeError("DATABASE_URL is not set")
+
+    # Render Postgres URL may be 'postgres://', SQLAlchemy prefers 'postgresql://'
+    if database_url.startswith("postgres://"):
+        database_url = "postgresql://" + database_url[len("postgres://"):]
+
+    _engine = create_engine(
+        database_url,
+        pool_pre_ping=True,
+        future=True,
+    )
     return _engine
+
 
 def init_db() -> None:
     """
-    Create tables if not exist. Designed for Postgres.
+    Idempotent DB schema init.
+    IMPORTANT: no manual commit/rollback here; engine.begin() handles it.
     """
-    eng = engine()
-    ddl = [
-        # users (legacy code kept for backward compatibility)
+    engine = _get_engine()
+
+    statements = [
+        # USERS
         """
         CREATE TABLE IF NOT EXISTS users(
             id TEXT PRIMARY KEY,
-            code TEXT UNIQUE,
-            email TEXT UNIQUE,
-            note TEXT,
-            device_limit INTEGER NOT NULL DEFAULT 2,
-            is_disabled BOOLEAN NOT NULL DEFAULT FALSE,
-
-            status TEXT NOT NULL DEFAULT 'pending_payment', -- pending_payment|active|past_due|expired|blocked
-            paid_until TIMESTAMPTZ,
-            stripe_customer_id TEXT,
-            stripe_subscription_id TEXT,
-            current_package_id TEXT,
-            next_package_id TEXT,
+            email TEXT UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL,
             created_at TIMESTAMPTZ NOT NULL
         );
         """,
-        "CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);",
-        "CREATE INDEX IF NOT EXISTS idx_users_stripe_customer ON users(stripe_customer_id);",
-        "CREATE INDEX IF NOT EXISTS idx_users_stripe_sub ON users(stripe_subscription_id);",
-
-        """
-        CREATE TABLE IF NOT EXISTS user_devices(
-            user_id TEXT NOT NULL,
-            device_id TEXT NOT NULL,
-            first_seen_at TIMESTAMPTZ NOT NULL,
-            PRIMARY KEY(user_id, device_id)
-        );
-        """,
-
+        # PACKAGES
         """
         CREATE TABLE IF NOT EXISTS packages(
             id TEXT PRIMARY KEY,
             name TEXT NOT NULL,
-            price_cents INTEGER NOT NULL DEFAULT 0,
-            currency TEXT NOT NULL DEFAULT 'EUR',
+            price_cents INTEGER NOT NULL,
+            currency TEXT NOT NULL,
             stripe_price_id TEXT NOT NULL,
             created_at TIMESTAMPTZ NOT NULL
         );
         """,
-        "CREATE INDEX IF NOT EXISTS idx_packages_price ON packages(price_cents);",
-
+        # SUBSCRIPTIONS
         """
-        CREATE TABLE IF NOT EXISTS user_packages(
+        CREATE TABLE IF NOT EXISTS subscriptions(
+            id TEXT PRIMARY KEY,
             user_id TEXT NOT NULL,
             package_id TEXT NOT NULL,
-            active_until TIMESTAMPTZ,
-            PRIMARY KEY(user_id, package_id)
-        );
-        """,
-
-        """
-        CREATE TABLE IF NOT EXISTS playlists(
-            id TEXT PRIMARY KEY,
-            package_id TEXT NOT NULL,
-            source_type TEXT NOT NULL,      -- file|url
-            source_value TEXT NOT NULL,     -- filename|url
-            m3u_text TEXT,                  -- stored copy (optional)
-            epg_url TEXT,
+            status TEXT NOT NULL,
+            stripe_subscription_id TEXT,
             created_at TIMESTAMPTZ NOT NULL
         );
         """,
-        "CREATE INDEX IF NOT EXISTS idx_playlists_pkg ON playlists(package_id);",
-
+        # PLAYLISTS
         """
-        CREATE TABLE IF NOT EXISTS channels(
-            playlist_id TEXT NOT NULL,
-            tvg_id TEXT NOT NULL,
-            name TEXT NOT NULL,
-            tvg_name TEXT,
-            logo TEXT,
-            grp TEXT,
-            stream_url TEXT NOT NULL,
-            raw_extinf TEXT,
-            PRIMARY KEY(playlist_id, tvg_id)
+        CREATE TABLE IF NOT EXISTS playlists(
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            url TEXT NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL
         );
         """,
-        "CREATE INDEX IF NOT EXISTS idx_channels_grp ON channels(playlist_id, grp);",
-        "CREATE INDEX IF NOT EXISTS idx_channels_name ON channels(playlist_id, name);",
-
+        # EPG (ВАЖНО: description вместо desc)
         """
         CREATE TABLE IF NOT EXISTS epg_programmes(
             playlist_id TEXT NOT NULL,
@@ -114,55 +86,23 @@ def init_db() -> None:
             stop_utc TIMESTAMPTZ NOT NULL,
             title TEXT,
             description TEXT,
-            PRIMARY KEY(playlist_id, tvg_id, start_utc, stop_utc)
+            PRIMARY KEY (playlist_id, tvg_id, start_utc, stop_utc)
         );
         """,
-        "CREATE INDEX IF NOT EXISTS idx_epg_now ON epg_programmes(playlist_id, tvg_id, start_utc, stop_utc);",
-
-        """
-        CREATE TABLE IF NOT EXISTS login_codes(
-            id TEXT PRIMARY KEY,
-            user_id TEXT NOT NULL,
-            code TEXT NOT NULL,
-            created_at TIMESTAMPTZ NOT NULL,
-            expires_at TIMESTAMPTZ NOT NULL,
-            used BOOLEAN NOT NULL DEFAULT FALSE
-        );
-        """,
-        "CREATE INDEX IF NOT EXISTS idx_login_codes_user ON login_codes(user_id, created_at);",
-
-        """
-        CREATE TABLE IF NOT EXISTS payments(
-            id TEXT PRIMARY KEY,
-            user_id TEXT NOT NULL,
-            provider TEXT NOT NULL, -- stripe
-            event_type TEXT,
-            stripe_event_id TEXT,
-            stripe_customer_id TEXT,
-            stripe_subscription_id TEXT,
-            amount_cents INTEGER,
-            currency TEXT,
-            status TEXT,
-            raw_json TEXT,
-            created_at TIMESTAMPTZ NOT NULL
-        );
-        """,
-        "CREATE INDEX IF NOT EXISTS idx_payments_user ON payments(user_id, created_at);",
     ]
-    with eng.begin() as conn:
-        for stmt in ddl:
+
+    with engine.begin() as conn:
+        for stmt in statements:
             conn.execute(text(stmt))
 
+
 @contextmanager
-def db() -> Connection:
+def db():
+    """
+    Safe connection context. Always ensures schema exists.
+    Uses engine.begin() to avoid 'transaction is inactive' issues.
+    """
     init_db()
-    conn = engine().connect()
-    trans = conn.begin()
-    try:
+    engine = _get_engine()
+    with engine.begin() as conn:
         yield conn
-        trans.commit()
-    except Exception:
-        trans.rollback()
-        raise
-    finally:
-        conn.close()
