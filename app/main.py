@@ -1,17 +1,17 @@
-import os, asyncio
+import asyncio
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
 from app.routes import api_router
 from app.services.scheduler import start_scheduler
-from app.services.bootstrap import bootstrap   # <-- ВАЖНО: импортируем bootstrap()
-from app.db import init_db
+from app.services.bootstrap import bootstrap
 
 load_dotenv()
 
+
 def create_app() -> FastAPI:
-    app = FastAPI(title="IPTV Backend v3 (Stripe Subscriptions)", version="3.0.0")
+    app = FastAPI(title="IPTV Backend", version="4.0.0")
 
     app.add_middleware(
         CORSMiddleware,
@@ -25,10 +25,11 @@ def create_app() -> FastAPI:
 
     @app.on_event("startup")
     async def _startup():
-        init_db()
-        bootstrap()  # <-- ВАЖНО: создаёт таблицы + ensure_default_packages()
+        # Создаём таблицы + сидим пакеты (если заданы переменные Stripe)
+        bootstrap()
         asyncio.create_task(start_scheduler())
 
     return app
+
 
 app = create_app()
