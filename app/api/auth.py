@@ -54,14 +54,24 @@ class RequestCodeReq(BaseModel):
 
 @router.post("/auth/request_code")
 def request_code(req: RequestCodeReq):
+    """
+    ВАЖНО:
+    request_code должен работать даже если подписка НЕ активна,
+    иначе пользователь не сможет получить код и попасть в приложение.
+    Проверку подписки делаем в verify_code (ниже) и в доступе к IPTV.
+    """
     user = get_user_by_email(req.email)
     if not user:
         # allow auto-create to reduce friction
         user = create_or_get_user_for_email(req.email)
+
     if bool(user.get("is_disabled")):
         raise HTTPException(status_code=403, detail="User is disabled")
-    if not is_subscription_active(user):
-        raise HTTPException(status_code=402, detail="Subscription inactive. Please оплатите пакет.")
+
+    # !!! УБРАЛИ ПРОВЕРКУ ПОДПИСКИ ЗДЕСЬ !!!
+    # if not is_subscription_active(user):
+    #     raise HTTPException(status_code=402, detail="Subscription inactive. Please оплатите пакет.")
+
     code = create_login_code(user["id"])
     try:
         send_login_code(user["email"], code)
@@ -80,8 +90,13 @@ def verify_code(req: VerifyCodeReq):
         raise HTTPException(status_code=404, detail="User not found")
     if bool(user.get("is_disabled")):
         raise HTTPException(status_code=403, detail="User is disabled")
+
+    # ОСТАВЛЯЕМ проверку подписки тут:
+    # пользователь может получить код всегда,
+    # но войти (получить токен) — только если подписка активна.
     if not is_subscription_active(user):
         raise HTTPException(status_code=402, detail="Subscription inactive. Please оплатите пакет.")
+
     ok = verify_login_code(user["id"], req.code.strip())
     if not ok:
         raise HTTPException(status_code=400, detail="Invalid or expired code")
