@@ -1,245 +1,203 @@
 import os
-from datetime import datetime, timezone
-from sendgrid import SendGridAPIClient
-from sendgrid.helpers.mail import Mail
+import smtplib
+from email.message import EmailMessage
+from email.utils import formataddr
+from typing import Optional
 
 
-# ===== ENV =====
-SENDGRID_API_KEY = os.getenv("SENDGRID_API_KEY", "").strip()
-EMAIL_FROM = os.getenv("EMAIL_FROM", "").strip()
+# ===== Brand / Defaults =====
+BRAND_NAME = os.getenv("BRAND_NAME", "Kadr IPTV").strip() or "Kadr IPTV"
+SUPPORT_EMAIL = os.getenv("SUPPORT_EMAIL", os.getenv("EMAIL_FROM", "support@example.com")).strip()
 
-BRAND_NAME = os.getenv("BRAND_NAME", "KadrTV").strip()
-APP_URL = os.getenv("APP_URL", "https://kadr-backend-9lke.onrender.com/docs").strip()
-SUPPORT_EMAIL = os.getenv("SUPPORT_EMAIL", EMAIL_FROM).strip()
+# If you use SMTP (Gmail App Password) set these:
+SMTP_HOST = os.getenv("SMTP_HOST", "smtp.gmail.com")
+SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
+SMTP_USER = (os.getenv("SMTP_USER") or "").strip()
+SMTP_PASSWORD = (os.getenv("SMTP_PASSWORD") or "").strip()
+
+# From address (must be verified/sender identity in your provider)
+EMAIL_FROM = (os.getenv("EMAIL_FROM") or SMTP_USER or "").strip() or "no-reply@example.com"
+EMAIL_FROM_NAME = (os.getenv("EMAIL_FROM_NAME") or BRAND_NAME).strip() or BRAND_NAME
 
 
-# ===== INTERNAL: HTML WRAPPER =====
-def _wrap_html(title: str, preheader: str, body_html: str) -> str:
-    year = datetime.now(timezone.utc).year
-    # NOTE: preheader is hidden preview text for email clients
+def _safe_mask_email(email: str) -> str:
+    """mask like v***y@gmail.com for privacy line"""
+    try:
+        local, dom = email.split("@", 1)
+        if len(local) <= 2:
+            masked = local[0:1] + "***"
+        else:
+            masked = local[0:1] + "***" + local[-1]
+        return f"{masked}@{dom}"
+    except Exception:
+        return email
+
+
+def _build_html_login_code(
+    code: str,
+    to_email: str,
+    minutes_valid: int,
+    greeting_name: Optional[str] = None,
+) -> str:
+    # Greeting
+    if greeting_name and greeting_name.strip():
+        hello = f"Здравствуйте, {greeting_name.strip()} 👋"
+    else:
+        hello = "Здравствуйте! 👋"
+
+    masked_email = _safe_mask_email(to_email)
+
+    # Preheader (hidden preview text)
+    preheader = f"Код входа: {code}. Действителен {minutes_valid} минут."
+
     return f"""\
 <!doctype html>
-<html>
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>{title}</title>
-</head>
-<body style="margin:0;padding:0;background:#0b1220;font-family:Arial,Helvetica,sans-serif;">
-  <div style="display:none;max-height:0;overflow:hidden;opacity:0;color:transparent;">
-    {preheader}
-  </div>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{BRAND_NAME} — вход</title>
+  </head>
+  <body style="margin:0;padding:0;background:#0b1220;font-family:Arial,Helvetica,sans-serif;">
+    <div style="display:none;max-height:0;overflow:hidden;opacity:0;color:transparent;">
+      {preheader}
+    </div>
 
-  <table width="100%" cellpadding="0" cellspacing="0" style="background:#0b1220;padding:24px 12px;">
-    <tr>
-      <td align="center">
-        <table width="640" cellpadding="0" cellspacing="0"
-               style="width:640px;max-width:640px;background:#0f172a;border-radius:16px;overflow:hidden;border:1px solid rgba(255,255,255,0.08);">
-          <!-- Header -->
-          <tr>
-            <td style="padding:22px 24px;background:linear-gradient(135deg,#111827,#0f172a);border-bottom:1px solid rgba(255,255,255,0.08);">
-              <div style="font-size:22px;font-weight:800;color:#22c55e;letter-spacing:0.2px;">
-                📺 {BRAND_NAME}
-              </div>
-              <div style="margin-top:6px;font-size:12px;color:rgba(255,255,255,0.60);">
-                IPTV сервис • быстрый вход • безопасно
-              </div>
-            </td>
-          </tr>
+    <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="background:#0b1220;padding:24px 12px;">
+      <tr>
+        <td align="center">
+          <table role="presentation" cellpadding="0" cellspacing="0" width="620" style="max-width:620px;width:100%;">
+            <tr>
+              <td style="padding:10px 6px 18px 6px;">
+                <div style="display:flex;align-items:center;gap:10px;">
+                  <div style="width:40px;height:40px;border-radius:12px;background:linear-gradient(135deg,#22c55e,#16a34a);display:inline-block;"></div>
+                  <div>
+                    <div style="color:#e5e7eb;font-size:18px;font-weight:800;line-height:1;">{BRAND_NAME}</div>
+                    <div style="color:rgba(229,231,235,0.7);font-size:12px;margin-top:4px;">IPTV сервис • быстрый вход • безопасно</div>
+                  </div>
+                </div>
+              </td>
+            </tr>
 
-          <!-- Content -->
-          <tr>
-            <td style="padding:26px 24px;color:#ffffff;">
-              {body_html}
-            </td>
-          </tr>
+            <tr>
+              <td style="
+                background:rgba(255,255,255,0.03);
+                border:1px solid rgba(255,255,255,0.08);
+                border-radius:18px;
+                padding:26px 22px;
+              ">
+                <div style="color:#e5e7eb;font-size:22px;font-weight:900;line-height:1.25;">
+                  Вход в {BRAND_NAME}
+                </div>
 
-          <!-- Footer -->
-          <tr>
-            <td style="padding:18px 24px;background:#0b1220;border-top:1px solid rgba(255,255,255,0.08);">
-              <div style="font-size:12px;color:rgba(255,255,255,0.55);line-height:1.6;">
-                Если вы не запрашивали это письмо — просто игнорируйте его. Никому не сообщайте код/ссылку.
-                <br/>
-                Поддержка: <a href="mailto:{SUPPORT_EMAIL}" style="color:#22c55e;text-decoration:none;">{SUPPORT_EMAIL}</a>
-                <br/>
-                © {year} {BRAND_NAME}
-              </div>
-            </td>
-          </tr>
+                <div style="margin-top:14px;color:rgba(229,231,235,0.88);font-size:15px;line-height:1.75;">
+                  {hello}<br/>
+                  Спасибо, что выбираете <b>{BRAND_NAME}</b> 💚<br/>
+                  Для подтверждения входа введите этот код в приложении:
+                </div>
 
-        </table>
+                <div style="margin-top:22px;text-align:center;">
+                  <div style="
+                    display:inline-block;
+                    padding:16px 26px;
+                    border-radius:16px;
+                    background:linear-gradient(135deg,#22c55e,#16a34a);
+                    color:#04130b;
+                    font-size:38px;
+                    font-weight:900;
+                    letter-spacing:10px;
+                    box-shadow:0 12px 34px rgba(34,197,94,0.35);
+                  ">{code}</div>
 
-        <div style="margin-top:10px;font-size:11px;color:rgba(255,255,255,0.35);">
-          Это автоматическое письмо. Отвечать на него не нужно.
-        </div>
+                  <div style="margin-top:12px;color:rgba(229,231,235,0.65);font-size:13px;">
+                    Код действителен <b>{minutes_valid} минут</b>
+                  </div>
 
-      </td>
-    </tr>
-  </table>
-</body>
+                  <div style="margin-top:8px;color:rgba(229,231,235,0.55);font-size:12px;">
+                    Запрос выполнен для: <b>{masked_email}</b>
+                  </div>
+                </div>
+
+                <div style="margin-top:22px;padding:14px 14px;border-radius:14px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);">
+                  <div style="color:rgba(229,231,235,0.82);font-size:14px;line-height:1.65;">
+                    💡 <b>Подсказка:</b> если письмо не пришло — проверьте папки <b>Спам</b> и <b>Промоакции</b>.
+                  </div>
+                </div>
+
+                <div style="margin-top:12px;padding:14px 14px;border-radius:14px;background:rgba(34,197,94,0.10);border:1px solid rgba(34,197,94,0.25);">
+                  <div style="color:rgba(229,231,235,0.88);font-size:14px;line-height:1.65;">
+                    🔒 Мы заботимся о вашей безопасности.<br/>
+                    Никому не сообщайте этот код — даже сотрудникам поддержки.
+                  </div>
+                </div>
+
+                <div style="margin-top:18px;color:rgba(229,231,235,0.78);font-size:14px;line-height:1.7;">
+                  Если вы не запрашивали вход — просто проигнорируйте это письмо.
+                </div>
+
+                <div style="margin-top:16px;color:rgba(229,231,235,0.88);font-size:14px;line-height:1.7;">
+                  С уважением,<br/>
+                  команда <b>{BRAND_NAME}</b>
+                </div>
+
+                <div style="margin-top:18px;color:rgba(229,231,235,0.55);font-size:12px;line-height:1.6;">
+                  Поддержка: <span style="color:rgba(229,231,235,0.8);">{SUPPORT_EMAIL}</span><br/>
+                  Это автоматическое письмо — отвечать на него не нужно.
+                </div>
+              </td>
+            </tr>
+
+            <tr>
+              <td style="padding:16px 6px 0 6px;color:rgba(229,231,235,0.45);font-size:12px;text-align:center;">
+                © {BRAND_NAME} — все права защищены
+              </td>
+            </tr>
+
+          </table>
+        </td>
+      </tr>
+    </table>
+  </body>
 </html>
 """
 
 
-def _send_email(to_email: str, subject: str, html: str):
-    if not SENDGRID_API_KEY:
-        raise RuntimeError("SENDGRID_API_KEY is not set")
-    if not EMAIL_FROM:
-        raise RuntimeError("EMAIL_FROM is not set")
-
-    msg = Mail(
-        from_email=EMAIL_FROM,
-        to_emails=to_email,
-        subject=subject,
-        html_content=html
+def _build_text_login_code(code: str, minutes_valid: int) -> str:
+    return (
+        f"{BRAND_NAME}\n\n"
+        f"Ваш код входа: {code}\n"
+        f"Код действителен {minutes_valid} минут.\n\n"
+        f"Если вы не запрашивали вход — просто проигнорируйте это письмо.\n"
+        f"Поддержка: {SUPPORT_EMAIL}\n"
     )
-    sg = SendGridAPIClient(SENDGRID_API_KEY)
-    sg.send(msg)
 
 
-# =====================================================================
-# PUBLIC API: EMAIL TEMPLATES
-# =====================================================================
+def _send_smtp(to_email: str, subject: str, html: str, text: str) -> None:
+    if not SMTP_USER or not SMTP_PASSWORD:
+        raise RuntimeError("SMTP_USER/SMTP_PASSWORD are not set")
 
-def send_login_code(email: str, code: str, minutes_valid: int = 10):
-    title = "Код входа"
-    preheader = f"Ваш код входа: {code} (действителен {minutes_valid} минут)"
-    body = f"""
-      <div style="font-size:20px;font-weight:800;line-height:1.2;">
-        Вход в {BRAND_NAME}
-      </div>
+    msg = EmailMessage()
+    msg["Subject"] = subject
+    msg["From"] = formataddr((EMAIL_FROM_NAME, EMAIL_FROM))
+    msg["To"] = to_email
+    msg.set_content(text)
+    msg.add_alternative(html, subtype="html")
 
-      <div style="margin-top:10px;font-size:14px;color:rgba(255,255,255,0.75);line-height:1.7;">
-        Введите этот код в приложении, чтобы подтвердить вход.
-      </div>
+    with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=20) as server:
+        server.ehlo()
+        server.starttls()
+        server.ehlo()
+        server.login(SMTP_USER, SMTP_PASSWORD)
+        server.send_message(msg)
 
-      <div style="margin-top:22px;text-align:center;">
-        <div style="
-          display:inline-block;
-          padding:14px 22px;
-          border-radius:14px;
-          background:#22c55e;
-          color:#03120a;
-          font-size:34px;
-          font-weight:900;
-          letter-spacing:8px;
-        ">{code}</div>
-        <div style="margin-top:10px;font-size:12px;color:rgba(255,255,255,0.60);">
-          Код действителен <b>{minutes_valid} минут</b>
-        </div>
-      </div>
 
-      <div style="margin-top:22px;padding:14px;border-radius:12px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);">
-        <div style="font-size:13px;color:rgba(255,255,255,0.75);line-height:1.7;">
-          <b>Совет:</b> если письмо не пришло — проверьте «Спам» и «Промоакции».
-        </div>
-      </div>
+def send_login_code(email: str, code: str, minutes_valid: int = 10, greeting_name: Optional[str] = None) -> None:
     """
-    html = _wrap_html(title, preheader, body)
-    _send_email(email, f"Ваш код входа в {BRAND_NAME}: {code}", html)
-
-
-def send_welcome(email: str):
-    title = "Добро пожаловать"
-    preheader = f"Аккаунт {BRAND_NAME} создан. Осталось выбрать пакет и начать просмотр."
-    body = f"""
-      <div style="font-size:20px;font-weight:800;line-height:1.2;">
-        Добро пожаловать в {BRAND_NAME} 👋
-      </div>
-
-      <div style="margin-top:10px;font-size:14px;color:rgba(255,255,255,0.75);line-height:1.7;">
-        Ваш аккаунт готов. Теперь можно выбрать пакет и начать просмотр.
-      </div>
-
-      <div style="margin-top:18px;padding:16px;border-radius:14px;background:rgba(34,197,94,0.10);border:1px solid rgba(34,197,94,0.35);">
-        <div style="font-size:14px;line-height:1.7;color:rgba(255,255,255,0.85);">
-          ✅ Быстрый вход по коду <br/>
-          ✅ Доступ с нескольких устройств (в пределах лимита) <br/>
-          ✅ EPG и удобная навигация
-        </div>
-      </div>
-
-      <div style="margin-top:20px;">
-        <a href="{APP_URL}" style="
-          display:inline-block;
-          background:#22c55e;
-          color:#03120a;
-          padding:12px 16px;
-          border-radius:12px;
-          text-decoration:none;
-          font-weight:800;
-          font-size:14px;
-        ">Открыть сервис</a>
-      </div>
+    Sends one-time login code email.
+    Uses SMTP credentials from env:
+      SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASSWORD, EMAIL_FROM, EMAIL_FROM_NAME
     """
-    html = _wrap_html(title, preheader, body)
-    _send_email(email, f"Добро пожаловать в {BRAND_NAME}", html)
-
-
-def send_payment_success(email: str, package_name: str):
-    title = "Оплата прошла"
-    preheader = f"Пакет {package_name} активирован. Приятного просмотра!"
-    body = f"""
-      <div style="font-size:20px;font-weight:800;line-height:1.2;">
-        Оплата подтверждена ✅
-      </div>
-
-      <div style="margin-top:10px;font-size:14px;color:rgba(255,255,255,0.75);line-height:1.7;">
-        Ваш пакет <b>{package_name}</b> активирован. Можно заходить в приложение и смотреть каналы.
-      </div>
-
-      <div style="margin-top:18px;padding:16px;border-radius:14px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);">
-        <div style="font-size:14px;line-height:1.7;color:rgba(255,255,255,0.80);">
-          Если входите на новом устройстве — используйте вход по коду (email → код → подтверждение).
-        </div>
-      </div>
-
-      <div style="margin-top:20px;">
-        <a href="{APP_URL}" style="
-          display:inline-block;
-          background:#22c55e;
-          color:#03120a;
-          padding:12px 16px;
-          border-radius:12px;
-          text-decoration:none;
-          font-weight:800;
-          font-size:14px;
-        ">Перейти в {BRAND_NAME}</a>
-      </div>
-    """
-    html = _wrap_html(title, preheader, body)
-    _send_email(email, f"{BRAND_NAME}: пакет «{package_name}» активирован", html)
-
-
-def send_subscription_expiring(email: str, days_left: int):
-    title = "Подписка заканчивается"
-    preheader = f"До окончания подписки осталось {days_left} дн."
-    body = f"""
-      <div style="font-size:20px;font-weight:800;line-height:1.2;">
-        Подписка скоро закончится ⏳
-      </div>
-
-      <div style="margin-top:10px;font-size:14px;color:rgba(255,255,255,0.75);line-height:1.7;">
-        До окончания подписки осталось: <b>{days_left} дн.</b><br/>
-        Чтобы доступ к IPTV не прерывался — продлите пакет заранее.
-      </div>
-
-      <div style="margin-top:20px;">
-        <a href="{APP_URL}" style="
-          display:inline-block;
-          background:#22c55e;
-          color:#03120a;
-          padding:12px 16px;
-          border-radius:12px;
-          text-decoration:none;
-          font-weight:800;
-          font-size:14px;
-        ">Продлить подписку</a>
-      </div>
-
-      <div style="margin-top:16px;font-size:12px;color:rgba(255,255,255,0.55);line-height:1.7;">
-        Если вы уже оплатили — просто проигнорируйте письмо.
-      </div>
-    """
-    html = _wrap_html(title, preheader, body)
-    _send_email(email, f"{BRAND_NAME}: подписка заканчивается через {days_left} дн.", html)
+    subject = f"{BRAND_NAME}: код входа {code}"
+    html = _build_html_login_code(code=code, to_email=email, minutes_valid=minutes_valid, greeting_name=greeting_name)
+    text = _build_text_login_code(code=code, minutes_valid=minutes_valid)
+    _send_smtp(to_email=email, subject=subject, html=html, text=text)
