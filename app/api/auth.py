@@ -88,16 +88,15 @@ def verify_code(req: VerifyCodeReq):
     user = get_user_by_email(req.email)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
+
     if bool(user.get("is_disabled")):
         raise HTTPException(status_code=403, detail="User is disabled")
-
-    # ОСТАВЛЯЕМ проверку подписки тут:
-    # пользователь может получить код всегда,
-    # но войти (получить токен) — только если подписка активна.
-    if not is_subscription_active(user):
-        raise HTTPException(status_code=402, detail="Subscription inactive. Please оплатите пакет.")
 
     ok = verify_login_code(user["id"], req.code.strip())
     if not ok:
         raise HTTPException(status_code=400, detail="Invalid or expired code")
-    return {"access_token": create_token(user["id"]), "token_type": "bearer"}
+
+    return {
+        "access_token": create_token(user["id"]),
+        "token_type": "bearer"
+    }
